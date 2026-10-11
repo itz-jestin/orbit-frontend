@@ -4,7 +4,8 @@
 // `text/event-stream` response. Each SSE frame is a JSON object shaped
 // like: { "<node_name>": { ...full pipeline state... } } for every
 // LangGraph node that runs (planner, researcher, writer,
-// grounding_check, critic), and a final { "done": true } frame.
+// grounding_check, critic), a final { "done": true } frame, or an
+// { "error": "..." } frame if the pipeline fails.
 //
 // EventSource only supports GET requests, so we use fetch() + a
 // ReadableStream reader and parse the "data: ...\n\n" frames manually.
@@ -20,15 +21,17 @@ export interface ResearchResultItem {
 }
 
 export interface Critique {
-  score?: number;
-  coverage?: number;
-  clarity?: number;
-  structure?: number;
-  source_quality?: number;
+  score?: number | null;
+  coverage?: number | null;
+  clarity?: number | null;
+  structure?: number | null;
+  source_quality?: number | null;
   accuracy_issue_found?: boolean;
   feedback?: string;
   question_issues?: { question: string; issue: string }[];
   approved?: boolean;
+  review_skipped?: boolean;
+  force_stop?: boolean;
 }
 
 export interface PipelineState {
@@ -49,6 +52,14 @@ export type NodeName =
   | "writer"
   | "grounding_check"
   | "critic";
+
+const KNOWN_NODES: NodeName[] = [
+  "planner",
+  "researcher",
+  "writer",
+  "grounding_check",
+  "critic",
+];
 
 export interface StreamEvent {
   node: NodeName;
@@ -103,6 +114,7 @@ export function streamResearch(
 
         for (const frame of frames) {
           const line = frame.trim();
+          // Skips keep-alive comments (": keepalive") and anything else non-data
           if (!line.startsWith("data:")) continue;
 
           const jsonStr = line.slice("data:".length).trim();
@@ -115,22 +127,36 @@ export function streamResearch(
             continue; // skip malformed frames rather than crashing the stream
           }
 
+          // Backend reported a pipeline failure
+          if (typeof parsed.error === "string") {
+            onError(new Error(parsed.error));
+            return;
+          }
+
           if (parsed.done) {
             onDone(lastState);
             return;
           }
 
-          const [node, state] = Object.entries(parsed)[0] as [
-            NodeName,
-            PipelineState,
-          ];
-          lastState = state;
-          onEvent({ node, state });
+          const [node, state] = Object.entries(parsed)[0] ?? [];
+          if (!KNOWN_NODES.includes(node as NodeName) || typeof state !== "object" || !state) {
+            continue; // ignore anything that isn't a pipeline step
+          }
+          lastState = state as PipelineState;
+          onEvent({ node: node as NodeName, state: lastState });
         }
       }
 
       // Stream ended without an explicit "done" frame.
-      onDone(lastState);
+      if (lastState?.final_report) {
+        onDone(lastState);
+      } else {
+        onError(
+          new Error(
+            "The connection closed before the report was finished. Please try again.",
+          ),
+        );
+      }
     } catch (err) {
       if ((err as Error).name === "AbortError") return;
       onError(err instanceof Error ? err : new Error(String(err)));

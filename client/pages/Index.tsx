@@ -109,10 +109,11 @@ function stepDetailFor(node: NodeName, state: PipelineState): string {
       return "Running an automated check for fabricated quotes, dates, and citations...";
     case "critic": {
       const c = state.critique;
-      if (!c || c.score === undefined) return "Reviewing the report...";
+      if (!c) return "Reviewing the report...";
+      if (c.review_skipped || c.score == null) return "Automated review skipped — report delivered as-is.";
       return c.approved
         ? `Report approved — score ${c.score}/100.`
-        : `Reviewer flagged issues (score ${c.score}/100). Sending back for revision...`;
+        : `Reviewer flagged issues (score ${c.score}/100).`;
     }
     default:
       return "";
@@ -579,7 +580,12 @@ export default function Index() {
                             <Sparkles className="h-4 w-4" />
                             Answer
                           </div>
-                          {critique?.score !== undefined && (
+                          {critique?.review_skipped && (
+                            <span className="rounded-full border border-border bg-muted/30 px-2.5 py-0.5 text-xs font-medium text-muted-foreground">
+                              Not reviewed
+                            </span>
+                          )}
+                          {critique?.score != null && (
                             <span
                               className={cn(
                                 "rounded-full border px-2.5 py-0.5 text-xs font-medium",
